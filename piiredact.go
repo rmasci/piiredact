@@ -22,8 +22,6 @@ import (
 	"fmt"
 	"log"
 	"regexp"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -130,7 +128,8 @@ func NewRedactionEngine(config Config) *RedactionEngine {
 
 	// Add enabled built-in patterns
 	for _, p := range builtinPatterns {
-		if enabled, exists := config.EnabledPatterns[p.Name]; exists && enabled {
+		if enabled, exists := config.EnabledPatterns[p.Name]; !exists || enabled {
+			// Include pattern if it's not in the map (default) or explicitly enabled
 			patterns = append(patterns, p)
 		}
 	}
@@ -183,6 +182,17 @@ func (e *RedactionEngine) Process(chunks []Chunk) ([]Chunk, error) {
 // the engine configuration.
 func (e *RedactionEngine) processChunks(chunks []Chunk) []Chunk {
 	result := make([]Chunk, len(chunks))
+
+	// If only processing a single chunk or concurrency is set to 1,
+	// process sequentially for better efficiency
+	if len(chunks) == 1 || e.config.MaxConcurrency == 1 {
+		for i, chunk := range chunks {
+			result[i] = e.redactChunk(chunk)
+		}
+		return result
+	}
+
+	// Otherwise, process concurrently
 	var wg sync.WaitGroup
 
 	// Use a worker pool to limit goroutines
@@ -221,9 +231,10 @@ func (e *RedactionEngine) redactChunk(c Chunk) Chunk {
 	// Apply each pattern to the text
 	for _, p := range e.patterns {
 		// Find all matches for this pattern
-		matches := p.Regex.FindAllStringSubmatchIndex(redacted, -1)
+		matches := p.Regex.FindAllStringIndex(redacted, -1)
 
 		// Process matches in reverse order to avoid offset issues
+		// when replacing text (earlier replacements would change string indices)
 		for i := len(matches) - 1; i >= 0; i-- {
 			match := matches[i]
 			start, end := match[0], match[1]
